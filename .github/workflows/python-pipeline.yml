@@ -46,7 +46,7 @@ jobs:
       - name: Validate Kubernetes Manifests
         run: |
           echo "Simulating cluster deployment via kubectl..."
-          kubectl apply -f k8s-manifest.yaml --dry-run=client --validate=false
+          kubectl create -f k8s-manifest.yaml --dry-run=client
           
       # Step 6: Print out the final ready-to-deploy manifest for visibility
       - name: Archive Generated Manifest
