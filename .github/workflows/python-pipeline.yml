@@ -1,18 +1,27 @@
-name: Production Python Pipeline
+name: Global Multi-Stack Production Pipeline
 
 # =========================================================================
-# TRIGGER LAYER (When does this run?)
+# TRIGGER LAYER (Jenkins Equivalent: Build Triggers / Poll SCM)
+# What: Defines what automated events activate the execution engine.
+# Why: Stacking these allows one file to handle all team execution paths.
 # =========================================================================
 on:
   push:
-    branches: ["main", "feature/**"]
+    branches: 
+      - "main"
+      - "feature/**"    # Matches 'feature/login' and nested branches like 'feature/api/v2/auth' via wildcards
   pull_request:
-    branches: ["main"]
+    branches: 
+      - "main"
   release:
     types: [ published ]
   schedule:
-    - cron: '0 0 * * 0' # Automated weekly cleanup/build (Every Sunday at Midnight UTC)
-  workflow_dispatch:   # Manual UI execution button
+    - cron: '0 0 * * 0' # Automated nightly/weekly build (Every Sunday at Midnight UTC)
+    
+  # PARAMETERIZED MANUAL TRIGGER (Jenkins Equivalent: 'This build is parameterized')
+  # What: Exposes user-configurable dropdowns and checkboxes inside the GitHub UI.
+  # Why: Crucial for target manual overrides, environment choices, or test isolation.
+  workflow_dispatch:   
     inputs:
       environment:
         description: 'Target Deployment Environment'
@@ -22,7 +31,7 @@ on:
         options:
           - 'staging'
           - 'uat'
-          - 'production'
+          - 'production' # Clean standard YAML list formatting prevents parsing bugs
       deploy_confirmation:
         description: 'Force Deployment? (Leave unchecked to run CI-only)'
         required: true
@@ -31,85 +40,174 @@ on:
 
 # =========================================================================
 # LEVEL 1: GLOBAL ENVIRONMENT VARIABLES (Workflow-Scope)
+# What: Key-value configurations available to EVERY job and step in this file.
+# Why: Used for system-wide constants like registry paths or app-wide metadata.
+# Note: Storing complex maps/lists requires plain-text string mapping conventions.
 # =========================================================================
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   APP_TEAM: "devops-core"
+  SERVICE_LIST: "api-gateway frontend auth-service" # Stored as a clean space-separated list string
+  TEAM_EMAILS: '{"devops": "devops@company.com", "qa": "qa@company.com"}' # Stored as a plain-text JSON map block
 
 jobs:
   # =========================================================================
-  # JOB 1: THE COMPILATION AND CONTAINER GENERATION STAGE
+  # STAGE 1: CODE QUALITY GATE (SONARQUBE)
+  # What: Static Application Security Testing (SAST) and Code Quality Analysis.
+  # Industry Standard Action: sonarSource/sonarqube-scan-action (Official)
   # =========================================================================
-  build-and-test:
+  sonar-sast-scan:
+    runs-on: ubuntu-latest # NOTE: GHA runners use Node.js natively under the hood to coordinate JavaScript market steps!
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4 # Clones code onto the workspace folder
+
+      - name: Run SonarQube Analysis
+        uses: sonarSource/sonarqube-scan-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  # =========================================================================
+  # STAGE 2: DEPENDENCY SCANNING (SNYK)
+  # What: Software Composition Analysis (SCA) to check open-source code libraries.
+  # Industry Standard Action: snyk/actions (Official)
+  # =========================================================================
+  snyk-sca-scan:
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Run Snyk Open Source Vulnerability Scan
+        uses: snyk/actions/python@master 
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # =========================================================================
+  # STAGE 3: APPLICATION COMPILATION, FILE OPERATIONS & CAPTURING OUTPUTS
+  # =========================================================================
+  build-and-publish-artifacts:
+    runs-on: ubuntu-latest
+    needs: [sonar-sast-scan, snyk-sca-scan] # Jenkins equivalent: Upstream stage gating dependency
     
     # =======================================================================
-    # THE PERMISSIONS LAYER (Security Scoping)
-    # What: Defines what the short-lived GITHUB_TOKEN is allowed to do.
-    # Why: Enforces the principle of least privilege, preventing token leaks 
-    #      from compromising your entire GitHub profile.
-    # Other Options: 
-    #   - id-token: write      -> For secure, passwordless login to AWS/GCP via OIDC.
-    #   - pull-requests: write -> For auto-commenting test results onto open PRs.
-    #   - security-events: write -> For uploading vulnerability scan results.
+    # LEVEL 2: JOB-LEVEL ENVIRONMENT VARIABLES (Job-Scope)
+    # What: Configuration variables scoped ONLY to this specific job.
+    # Why: Isolates parameter boundaries between distinct build groups.
     # =======================================================================
-    permissions:
-      contents: read     # Required to checkout/clone your code safely.
-      packages: write    # Required to publish your built image to GitHub Container Registry.
-
     env:
       BUILD_PROFILE: "production-optimized"
       PYTHON_VERSION: "3.11"
+      NODE_VERSION: "20"
+
+    # =======================================================================
+    # JOB OUTPUTS DECLARATION (Multi-Job Variable Handoff)
+    # What: Exposes generated values to separate jobs running on completely distinct VMs.
+    # Mapping syntax: variable_alias: ${{ steps.STEP_ID.outputs.VAR_KEY }}
+    # =======================================================================
+    outputs:
+      generated_app_version: ${{ steps.calc_version.outputs.computed_version }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Print Manual Parameters and Environments
-        if: github.event_name == 'workflow_dispatch'
+      # --- INDUSTRY STANDARD RUNTIME SETUP ACTIONS (NATIVE CACHING) ---
+      # Passing runtime variables via our Job Env properties to prevent code fragmentation
+      - name: Set up JDK 17 (Java Stack)
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: 'maven' # Drastically cuts build cycles down by 50% by storing heavy caching targets
+
+      - name: Set up Python Runtime (Python Stack)
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: 'pip'
+
+      - name: Set up Node.js Runtime (UI Stack)
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      # =====================================================================
+      # THE "RUN:" COMMAND & CONTEXT ASSIGNMENT INTERVIEW FOCUS
+      # How to save variable to same job: Append data to the '$GITHUB_ENV' tracking file.
+      # How to save variable to separate job: Append data to the '$GITHUB_OUTPUT' tracking file.
+      # =====================================================================
+      - name: Calculate Version and Assign Variables
+        id: calc_version # Necessary target handle for downstream output mapping hooks
+        # =====================================================================
+        # LEVEL 3: STEP-LEVEL ENVIRONMENT VARIABLES (Step-Scope)
+        # What: Variables loaded natively into the execution shell window of ONE step.
+        # =====================================================================
         env:
-          STEP_SPECIFIC_DEBUG: "true"
+          STEP_SPECIFIC_DEBUG: "true" 
         run: |
-          echo "Global Env (Registry): $REGISTRY"
-          echo "Job Env (Build Profile): $BUILD_PROFILE"
           echo "Step Env (Debug Enabled): $STEP_SPECIFIC_DEBUG"
-          echo "Target Environment Chosen via UI Input: ${{ github.event.inputs.environment }}"
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }} 
-
-      - name: Build and Push Docker Image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
-
-  # =========================================================================
-  # JOB 2: DEPLOYMENT STAGE
-  # =========================================================================
-  deploy-to-kubernetes:
-    runs-on: ubuntu-latest
-    needs: build-and-test
-    
-    if: |
-      github.event_name != 'workflow_dispatch' || 
-      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_confirmation == 'true')
-    
-    steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Inject Image Tag into Manifest
-        run: |
-          TARGET_ENV="${{ github.event.inputs.environment || 'staging' }}"
-          echo "Configuring manifest file for environment: ${TARGET_ENV}"
-          sed -i "s|DYNAMIC_IMAGE_TAG|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s-manifest.yaml
+          RAW_VERSION="v1.0.$(date +%s)"
           
-      - name: Verify Generated Manifest
-        run: cat k8s-manifest.yaml
+          # Writing state variables out to our system runner context tracking logs
+          echo "INTERNAL_VERSION=$RAW_VERSION" >> $GITHUB_ENV
+          echo "computed_version=$RAW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Verify and Parse Scoped Lists/Maps Variables
+        run: |
+          echo "Internal version from env context: $INTERNAL_VERSION"
+          
+          # Intercepting and loop-parsing our space-separated text list configuration
+          for service in $SERVICE_LIST; do
+            echo "Assembling package for deployment branch component: $service"
+          done
+          
+          # Reading and filtering out values from our JSON text map using 'jq' utility
+          DEVOPS_EMAIL=$(echo '$TEAM_EMAILS' | jq -r '.devops')
+          echo "Successfully extracted target from map context: $DEVOPS_EMAIL"
+
+      # =====================================================================
+      # FILE OPERATIONS INTERVIEW FOCUS (Read, Write, Append)
+      # What: Custom data tracking via basic Linux file redirection flags.
+      # =====================================================================
+      - name: Bash File Operations (Write, Append, Read)
+        run: |
+          # WRITE: Outputs text to a new file using the single '>' character channel
+          echo "=== Pipeline Build Log Initialized ===" > build-manifest.txt
+          
+          # APPEND: Pushes text safely onto the trailing line of an existing file via '>>'
+          echo "Compiled at timestamp: $(date)" >> build-manifest.txt
+          echo "Target Registry Destination: $REGISTRY" >> build-manifest.txt
+          
+          # READ: Outputs raw textual blocks directly out to standard console windows via 'cat'
+          cat build-manifest.txt
+
+      # =====================================================================
+      # JSON OPERATIONS INTERVIEW FOCUS (Create, Read, Parse, Modify)
+      # What: Inline Python manipulation schemas used to manage parameters.
+      # Why: GHA does not have a native marketplace action for JSON mapping; relying on 
+      #      pre-installed Python libraries eliminates risky third-party dependencies.
+      # =====================================================================
+      - name: Python JSON Operations (Create, Read, Parse, Update)
+        run: |
+          python3 -c "
+          import json
+          
+          # 1. CREATE & WRITE: Generate a structured configuration map file on disk
+          config_map = {
+              'service_name': 'auth-api',
+              'runtime': 'python-slim',
+              'active_profiles': ['security-hardened', 'oauth-enabled']
+          }
+          with open('app-config.json', 'w') as f:
+              json.dump(config_map, f, indent=4)
+          
+          # 2. READ & PARSE: Extract variables from configuration files cleanly
+          with open('app-config.json', 'r') as f:
+              data = json.load(f)
+          print(f'Parsed Service Target: {data[\"service_name\"]}')
+          
+          # 3. MODIFY & UPDATE: Append variables safely without text fragmentation
