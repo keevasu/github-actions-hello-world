@@ -31,13 +31,11 @@ on:
 
 # =========================================================================
 # LEVEL 1: GLOBAL ENVIRONMENT VARIABLES (Workflow-Scope)
-# What: Key-value configurations available to EVERY job and step in this file.
-# Why: Used for system-wide constants like registry paths or app-wide names.
 # =========================================================================
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  APP_TEAM: "devops-core" # Plain text metadata string
+  APP_TEAM: "devops-core"
 
 jobs:
   # =========================================================================
@@ -47,30 +45,31 @@ jobs:
     runs-on: ubuntu-latest
     
     # =======================================================================
-    # LEVEL 2: JOB-LEVEL ENVIRONMENT VARIABLES (Job-Scope)
-    # What: Configuration variables scoped ONLY to this specific job.
-    # Why: Isolates parameters (like compile modes or test profiles) from other jobs.
+    # THE PERMISSIONS LAYER (Security Scoping)
+    # What: Defines what the short-lived GITHUB_TOKEN is allowed to do.
+    # Why: Enforces the principle of least privilege, preventing token leaks 
+    #      from compromising your entire GitHub profile.
+    # Other Options: 
+    #   - id-token: write      -> For secure, passwordless login to AWS/GCP via OIDC.
+    #   - pull-requests: write -> For auto-commenting test results onto open PRs.
+    #   - security-events: write -> For uploading vulnerability scan results.
     # =======================================================================
+    permissions:
+      contents: read     # Required to checkout/clone your code safely.
+      packages: write    # Required to publish your built image to GitHub Container Registry.
+
     env:
       BUILD_PROFILE: "production-optimized"
       PYTHON_VERSION: "3.11"
 
-    permissions:
-      contents: read
-      packages: write 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # =====================================================================
-      # LEVEL 3: STEP-LEVEL ENVIRONMENT VARIABLES (Step-Scope)
-      # What: Variables loaded natively into the shell execution window of ONE step.
-      # Why: Safest scoping practice for variables required strictly by a single script execution.
-      # =====================================================================
       - name: Print Manual Parameters and Environments
         if: github.event_name == 'workflow_dispatch'
         env:
-          STEP_SPECIFIC_DEBUG: "true" # Visible only inside this immediate shell execution block
+          STEP_SPECIFIC_DEBUG: "true"
         run: |
           echo "Global Env (Registry): $REGISTRY"
           echo "Job Env (Build Profile): $BUILD_PROFILE"
@@ -98,7 +97,6 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-and-test
     
-    # Conditional logic mapping: Skip execution if manual run, unless user checked override box
     if: |
       github.event_name != 'workflow_dispatch' || 
       (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_confirmation == 'true')
@@ -109,7 +107,6 @@ jobs:
 
       - name: Inject Image Tag into Manifest
         run: |
-          # Fallback default evaluation logic pattern
           TARGET_ENV="${{ github.event.inputs.environment || 'staging' }}"
           echo "Configuring manifest file for environment: ${TARGET_ENV}"
           sed -i "s|DYNAMIC_IMAGE_TAG|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s-manifest.yaml
