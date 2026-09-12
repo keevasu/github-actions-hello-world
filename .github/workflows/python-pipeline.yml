@@ -19,7 +19,10 @@ on:
         required: true
         default: 'staging'
         type: choice
-        options: [- staging, - uat, - production]
+        options:
+          - 'staging'
+          - 'uat'
+          - 'production'
       deploy_confirmation:
         description: 'Force Deployment? (Leave unchecked to run CI-only)'
         required: true
@@ -30,7 +33,6 @@ on:
 # LEVEL 1: GLOBAL ENVIRONMENT VARIABLES (Workflow-Scope)
 # What: Key-value configurations available to EVERY job and step in this file.
 # Why: Used for system-wide constants like registry paths or app-wide names.
-# Other Options: Can use variables dynamically populated by github metadata.
 # =========================================================================
 env:
   REGISTRY: ghcr.io
@@ -48,7 +50,6 @@ jobs:
     # LEVEL 2: JOB-LEVEL ENVIRONMENT VARIABLES (Job-Scope)
     # What: Configuration variables scoped ONLY to this specific job.
     # Why: Isolates parameters (like compile modes or test profiles) from other jobs.
-    # Other Options: You can reference matrix strategy properties here if using matrix builds.
     # =======================================================================
     env:
       BUILD_PROFILE: "production-optimized"
@@ -65,7 +66,6 @@ jobs:
       # LEVEL 3: STEP-LEVEL ENVIRONMENT VARIABLES (Step-Scope)
       # What: Variables loaded natively into the shell execution window of ONE step.
       # Why: Safest scoping practice for variables required strictly by a single script execution.
-      # Other Options: Perfect spot to map repository Secrets securely to specific actions.
       # =====================================================================
       - name: Print Manual Parameters and Environments
         if: github.event_name == 'workflow_dispatch'
