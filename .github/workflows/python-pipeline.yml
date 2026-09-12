@@ -40,7 +40,7 @@ jobs:
       # Step 4: Update the K8s manifest with our brand new image tag
       - name: Inject Image Tag into Manifest
         run: |
-          sed -i "s|DYNAMIC_IMAGE_TAG|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s-manifests.yaml
+          sed -i "s|DYNAMIC_IMAGE_TAG|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s-manifest.yaml
 
       # Step 5: Interview Highlight - Dry-Run validation
       - name: Validate Kubernetes Manifests
