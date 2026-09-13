@@ -9,7 +9,7 @@ on:
   push:
     branches: 
       - "main"
-      - "feature/**"    # Matches 'feature/login' and nested branches like 'feature/api/v2/auth' via wildcards
+      - "feature/**"    # Matches 'feature/login' and nested branches like 'feature/api/v2/auth' via glob wildcards
   pull_request:
     branches: 
       - "main"
@@ -112,8 +112,6 @@ jobs:
         python-runtime: ["3.10", "3.11"]
         
         # ADVANCED MATRIX PATTERN (Inclusions/Exclusions maps)
-        # include: Allows adding custom step variables to specific combinations.
-        # exclude: Allows dropping specific problematic environments completely.
         include:
           - os-platform: windows-latest
             python-runtime: "3.11"
@@ -131,7 +129,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-runtime }}
-          # Note: Caching is removed here to prevent empty-directory runtime check failures
+          # Note: Caching is removed here to prevent empty-directory runtime check failures from simple sandboxes
 
       - name: Run Framework Test Suite Parallel Split
         run: |
@@ -148,10 +146,20 @@ jobs:
     # Waits for our multi-dimensional testing matrix stage to complete successfully first
     needs: matrix-unit-testing 
     
+    # =======================================================================
+    # LEVEL 2: JOB-LEVEL ENVIRONMENT VARIABLES (Job-Scope)
+    # What: Configuration variables scoped ONLY to this specific job.
+    # Why: Isolates parameters (like compile modes or test profiles) from other jobs.
+    # =======================================================================
     env:
       BUILD_PROFILE: "production-optimized"
       NODE_VERSION: "20"
 
+    # =======================================================================
+    # JOB OUTPUTS DECLARATION (Multi-Job Variable Handoff)
+    # What: Exposes generated values to separate jobs running on completely distinct VMs.
+    # Mapping syntax: variable_alias: ${{ steps.STEP_ID.outputs.VAR_KEY }}
+    # =======================================================================
     outputs:
       generated_app_version: ${{ steps.calc_version.outputs.computed_version }}
 
@@ -159,13 +167,14 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- INDUSTRY STANDARD RUNTIME SETUP ACTIONS (NATIVE CACHING) ---
+      # --- INDUSTRY STANDARD RUNTIME SETUP ACTIONS (NATIVE CACHING EXCLUSIONS DESIGN) ---
+      # For microservices templates, we keep java and node compilation templates available
       - name: Set up JDK 17 (Java Stack)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven'
+          # Note: cache: 'maven' is excluded here to prevent template crashes when pom.xml is missing in sandbox
 
       - name: Set up Node.js Runtime (UI Stack)
         uses: actions/setup-node@v4
@@ -180,39 +189,217 @@ jobs:
       # =====================================================================
       - name: Calculate Version and Assign Variables
         id: calc_version 
+        # =====================================================================
+        # LEVEL 3: STEP-LEVEL ENVIRONMENT VARIABLES (Step-Scope)
+        # What: Variables loaded natively into the execution shell window of ONE step.
+        # =====================================================================
         env:
           STEP_SPECIFIC_DEBUG: "true" 
         run: |
           echo "Step Env (Debug Enabled): $STEP_SPECIFIC_DEBUG"
           RAW_VERSION="v1.0.$(date +%s)"
+          
+          # Writing variables to our system tracking channels
           echo "INTERNAL_VERSION=$RAW_VERSION" >> $GITHUB_ENV
           echo "computed_version=$RAW_VERSION" >> $GITHUB_OUTPUT
 
       - name: Verify and Parse Scoped Lists/Maps Variables
         run: |
           echo "Internal version from env context: $INTERNAL_VERSION"
+          
+          # Parsing space-separated string array list via standard shell loop
           for service in $SERVICE_LIST; do
             echo "Assembling package component: $service"
           done
-          DEVOPS_EMAIL=$(echo '$TEAM_EMAILS' | jq -r '.devops')
-          echo "Successfully extracted target from map context: $DEVOPS_EMAIL"
+      # Reading and filtering out key-value pairs from raw JSON string via 'jq' tool
+      DEVOPS_EMAIL=$(echo '$TEAM_EMAILS' | jq -r '.devops')
+      echo "Successfully extracted target from map context: $DEVOPS_EMAIL"
 
       # =====================================================================
-      # FILE OPERATIONS INTERVIEW FOCUS (Read, Write, Append)
-      # What: Custom data tracking via basic Linux file redirection flags.
+      # CONCEPT BLOCK: BASH FILE OPERATIONS (Create, Read, Update/Append)
+      # What: Basic Linux file manipulation via standard file descriptor redirection.
       # =====================================================================
-      - name: Bash File Operations (Write, Append, Read)
+      - name: Bash File Operations (Create, Update, Read)
         run: |
-          # WRITE: Outputs text to a new file using the single '>' character channel
+          # WRITE: Creates a fresh file using single '>' redirection channel
           echo "=== Pipeline Build Log Initialized ===" > build-manifest.txt
-          
-          # APPEND: Pushes text safely onto the trailing line of an existing file via '>>'
+          # APPEND: Appends trailing strings without text destruction via '>>'
           echo "Compiled at timestamp: $(date)" >> build-manifest.txt
           echo "Target Registry Destination: $REGISTRY" >> build-manifest.txt
-          
-          # READ: Outputs raw textual blocks directly out to standard console windows via 'cat'
+          # READ: Outputs structural configurations out to console via 'cat'
           cat build-manifest.txt
 
       # =====================================================================
-      # JSON OPERATIONS INTERVIEW FOCUS (Create, Read, Parse, Modify)
-      # What: Native inline Python execution used to handle structured datasets.
+      # CONCEPT BLOCK: PYTHON JSON OPERATIONS (Create, Read, Parse, Update)
+      # What: Native inline Python execution used to parse structured datasets safely.
+      # Why: Converts plain-text strings into complex maps cleanly, avoiding unverified third-party actions.
+      # =====================================================================
+      - name: Python JSON Operations (Create, Read, Parse, Update)
+        run: |
+          python3 -c "import json
+          # 1. CREATE & WRITE: Generate a structured configuration map file on disk
+          config_map = {'service_name': 'auth-api','runtime': 'python-slim','active_profiles': ['security-hardened', 'oauth-enabled']}
+          with open('app-config.json', 'w') as f:
+              json.dump(config_map, f, indent=4)
+          # 2. READ & PARSE: Extract keys dynamically out of filesystem configurations
+          with open('app-config.json', 'r') as f:
+              data = json.load(f)
+          print(f'Parsed Service Target: {data["service_name"]}')
+          # 3. MODIFY & UPDATE: Mutate structures safely without string breaking
+          data['pipeline_status'] = 'verified'
+          data['active_profiles'].append('monitoring-enabled')
+          with open('app-config.json', 'w') as f:
+              json.dump(data, f, indent=4)
+          print('>>> JSON Configuration Mutated Successfully')"
+
+      # =====================================================================
+      # ARTIFACT PERSISTENCE (Saving pipeline outputs to the GitHub UI)
+      # Verified Industry Action: actions/upload-artifact@v4 (Official)
+      # =====================================================================
+      - name: Archive Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package-output
+          path: |
+            build-manifest.txt
+            app-config.json
+
+      # =====================================================================
+      # SECRETS MANAGEMENT & ARTIFACTORY INTEGRATION INTERVIEW FOCUS
+      # What: Secure credentials retrieval mapping across Org/Repo/Env tiers.
+      # Why: GHA handles asymmetric encryption at rest and hides stdout with '***' masking.
+      # Config Path: Settings -> Secrets and variables -> Actions -> New repository secret.
+      # Verified Industry Action: jfrog/setup-jfrog-cli@v4 (Official Integration)
+      # =====================================================================
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          # Pulling encrypted secrets securely out of the GitHub Actions secure context vault
+          JF_URL: ${{ secrets.JF_PLATFORM_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+
+      - name: Publish Binaries to JFrog Artifactory
+        run: |
+          echo "Authenticating securely using masked GitHub Secrets..."
+          # jf rt upload "target/*.jar" "generic-local-repo/java-apps/"
+
+  # =========================================================================
+  # STAGE 5: CONTAINER ASSEMBLY AND SECURITY DISCOVERY (SYSDIG)
+  # =========================================================================
+  container-security:
+    runs-on: ubuntu-latest
+    needs: build-and-publish-artifacts
+
+    # =======================================================================
+    # THE PERMISSIONS LAYER (Security Scoping)
+    # What: Restricts the execution boundaries of the internal temporary runtime keys.
+    # Why: Enforces Principle of Least Privilege.
+    # =======================================================================
+    permissions:
+      contents: read     # Safe checkout scope
+      packages: write    # Grants secure write-access to publish images directly to GHCR
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Dynamic automated short-lived secret token
+
+      # INTERVIEW TRAP FOCUS: Why push false here?
+      # Answer: Shift-left pattern compiles image locally to allow Sysdig to verify layers BEFORE pushing public.
+      # This completely blocks vulnerable containers from leaking into registry targets.
+      - name: Build Local Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Run Sysdig Image Vulnerability Scan
+        uses: sysdiglabs/scan-action@v5
+        with:
+          image-tag: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          sysdig-secure-token: ${{ secrets.SYSDIG_SECURE_TOKEN }}
+          sysdig-secure-url: "sysdigcloud.com"
+
+      - name: Push Verified Image to Registry
+        if: success() # Gated execution: Only pushes container layer if Sysdig scan completes 100% green!
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  # =========================================================================
+  # STAGE 6: CLOUD-NATIVE DEPLOYMENT
+  # =========================================================================
+  deploy-to-kubernetes:
+    runs-on: ubuntu-latest
+    needs: [build-and-publish-artifacts, container-security]
+
+    # =======================================================================
+    # THE PIPE SYNTAX (if: |)
+    # What: The pipe character (|) is a YAML Literal Block Scalar parsing multi-line criteria.
+    # Logic: Run if it's NOT manual, OR if manual AND confirmation checkbox is checked true.
+    # =======================================================================
+    if: |
+      github.event_name != 'workflow_dispatch' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_confirmation == 'true')
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # Cross-Job Handoff Verification: Pulling output token generated on Stage 4 VM
+      - name: Read Captured App Version From Build Job
+        run: |
+          echo "Dynamic version passed from Stage 4 outputs: ${{ needs.build-and-publish-artifacts.outputs.generated_app_version }}"
+
+      - name: Inject Image Tag into Manifest
+        run: |
+          TARGET_ENV="${{ github.event.inputs.environment || 'staging' }}"
+          echo "Configuring manifest file for environment: ${TARGET_ENV}"
+          # Replaces deployment placeholder tag inside our single file repository target
+          # Fixed naming learning check: Singular match validation string 'k8s-manifest.yaml'
+          sed -i "s|DYNAMIC_IMAGE_TAG|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s-manifest.yaml
+
+      - name: Verify Generated Manifest
+        run: cat k8s-manifest.yaml
+
+# =========================================================================
+# GLOBAL POST-EXECUTION HOOK (The Jenkins Workflow-Level Post Equivalent)
+# What: A dedicated final stage that captures the state of the entire workflow run.
+# Why: GHA does not support root workflow-level post blocks; this architectural pattern
+# replaces it cleanly using job dependencies combined with conditional evaluation steps.
+# =========================================================================
+global-post-pipeline-handler:
+  runs-on: ubuntu-latest
+  needs: [sonar-sast-scan, snyk-sca-scan, matrix-unit-testing, build-and-publish-artifacts, container-security, deploy-to-kubernetes]
+  if: always() # Forces this job to execute even if any preceding jobs failed or were aborted
+
+  steps:
+    # --- SUCCESS HOOK (Jenkins success { ... }) ---
+    - name: Global Success Actions
+      if: |
+        needs.sonar-sast-scan.result == 'success' &&
+        needs.snyk-sca-scan.result == 'success' &&
+        needs.matrix-unit-testing.result == 'success' &&
+        needs.build-and-publish-artifacts.result == 'success' &&
+        needs.container-security.result == 'success' &&
+        (needs.deploy-to-kubernetes.result == 'success' || needs.deploy-to-kubernetes.result == 'skipped')
+      run: |
+        echo "🎉 SUCCESS: The entire multi-stack delivery matrix completed perfectly without errors."
+
+    # --- FAILURE HOOK (Jenkins failure { ... }) ---
+    - name: Global Failure Actions
+      if: |
+        needs.sonar-sast-scan.result == 'failure' ||
+        needs.snyk-sca-scan.result == 'failure' ||
+        needs.matrix-unit-testing.result == 'failure' ||
+        needs.build-and-publish-artifacts.result == 'failure' ||
+        needs.container-security.result == 'failure' ||
+        needs.deploy-to-kubernetes.result == 'failure'
+      run: |
+        echo "🚨 FAILURE: One or more critical pipeline matrix infrastructure jobs crashed."
