@@ -1,0 +1,4 @@
+# Application Dependencies Manifest
+# Added to satisfy the pipeline's Snyk dependency scan gate
+
+urllib3==2.2.1
