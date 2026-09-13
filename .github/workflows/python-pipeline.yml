@@ -131,7 +131,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-runtime }}
-          cache: 'pip'
+          # Note: Caching is removed here to prevent empty-directory runtime check failures
 
       - name: Run Framework Test Suite Parallel Split
         run: |
@@ -216,4 +216,3 @@ jobs:
       # =====================================================================
       # JSON OPERATIONS INTERVIEW FOCUS (Create, Read, Parse, Modify)
       # What: Native inline Python execution used to handle structured datasets.
-      # Why: GHA does not have a native marketplace action for JSON mapping; relying on 
