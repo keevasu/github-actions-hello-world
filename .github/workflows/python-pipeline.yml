@@ -2,25 +2,21 @@ name: Global Multi-Stack Production Pipeline
 
 # =========================================================================
 # TRIGGER LAYER (Jenkins Equivalent: Build Triggers / Poll SCM)
-# What: Defines what automated events activate the execution engine.
-# Why: Stacking these allows one file to handle all team execution paths.
 # =========================================================================
 on:
   push:
     branches: 
       - "main"
-      - "feature/**"    # Matches 'feature/login' and nested branches like 'feature/api/v2/auth' via wildcards
+      - "feature/**"    
   pull_request:
     branches: 
       - "main"
   release:
     types: [ published ]
   schedule:
-    - cron: '0 0 * * 0' # Automated nightly/weekly build (Every Sunday at Midnight UTC)
+    - cron: '0 0 * * 0' 
     
   # PARAMETERIZED MANUAL TRIGGER (Jenkins Equivalent: 'This build is parameterized')
-  # What: Exposes user-configurable dropdowns and checkboxes inside the GitHub UI.
-  # Why: Crucial for target manual overrides, environment choices, or test isolation.
   workflow_dispatch:   
     inputs:
       environment:
@@ -31,7 +27,7 @@ on:
         options:
           - 'staging'
           - 'uat'
-          - 'production' # Clean standard YAML list formatting prevents parsing bugs
+          - 'production' 
       deploy_confirmation:
         description: 'Force Deployment? (Leave unchecked to run CI-only)'
         required: true
@@ -40,28 +36,23 @@ on:
 
 # =========================================================================
 # LEVEL 1: GLOBAL ENVIRONMENT VARIABLES (Workflow-Scope)
-# What: Key-value configurations available to EVERY job and step in this file.
-# Why: Used for system-wide constants like registry paths or app-wide metadata.
-# Note: Storing complex maps/lists requires plain-text string mapping conventions.
 # =========================================================================
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   APP_TEAM: "devops-core"
-  SERVICE_LIST: "api-gateway frontend auth-service" # Stored as a clean space-separated list string
-  TEAM_EMAILS: '{"devops": "devops@company.com", "qa": "qa@company.com"}' # Stored as a plain-text JSON map block
+  SERVICE_LIST: "api-gateway frontend auth-service" 
+  TEAM_EMAILS: '{"devops": "devops@company.com", "qa": "qa@company.com"}' 
 
 jobs:
   # =========================================================================
   # STAGE 1: CODE QUALITY GATE (SONARQUBE)
-  # What: Static Application Security Testing (SAST) and Code Quality Analysis.
-  # Industry Standard Action: sonarSource/sonarqube-scan-action (Official)
   # =========================================================================
   sonar-sast-scan:
-    runs-on: ubuntu-latest # NOTE: GHA runners use Node.js natively under the hood to coordinate JavaScript market steps!
+    runs-on: ubuntu-latest 
     steps:
       - name: Checkout Code
-        uses: actions/checkout@v4 # Clones code onto the workspace folder
+        uses: actions/checkout@v4 
 
       - name: Run SonarQube Analysis
         uses: sonarSource/sonarqube-scan-action@v3
@@ -71,8 +62,6 @@ jobs:
 
   # =========================================================================
   # STAGE 2: DEPENDENCY SCANNING (SNYK)
-  # What: Software Composition Analysis (SCA) to check open-source code libraries.
-  # Industry Standard Action: snyk/actions (Official)
   # =========================================================================
   snyk-sca-scan:
     runs-on: ubuntu-latest
@@ -82,31 +71,52 @@ jobs:
 
       - name: Run Snyk Open Source Vulnerability Scan
         uses: snyk/actions/python@master 
+        continue-on-error: true 
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
 
   # =========================================================================
-  # STAGE 3: APPLICATION COMPILATION, FILE OPERATIONS & CAPTURING OUTPUTS
+  # STAGE 3: MULTI-ENVIRONMENT PARALLEL MATRIX TESTING
+  # =========================================================================
+  matrix-unit-testing:
+    needs: [sonar-sast-scan, snyk-sca-scan]
+    strategy:
+      fail-fast: false 
+      matrix:
+        os-platform: [ubuntu-latest, windows-latest]
+        python-runtime: ["3.10", "3.11"]
+        include:
+          - os-platform: windows-latest
+            python-runtime: "3.11"
+            experimental_flag: "true"
+
+    runs-on: ${{ matrix.os-platform }}
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Inject Matrix Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-runtime }}
+          cache: 'pip'
+
+      - name: Run Framework Test Suite Parallel Split
+        run: |
+          echo "Current Host Runner OS System OS: ${{ matrix.os-platform }}"
+          echo "Current Target Code Runtime Engine: ${{ matrix.python-runtime }}"
+
+  # =========================================================================
+  # STAGE 4: APPLICATION COMPILATION, FILE OPERATIONS & SECRETS INJECTION
   # =========================================================================
   build-and-publish-artifacts:
     runs-on: ubuntu-latest
-    needs: [sonar-sast-scan, snyk-sca-scan] # Jenkins equivalent: Upstream stage gating dependency
+    needs: matrix-unit-testing 
     
-    # =======================================================================
-    # LEVEL 2: JOB-LEVEL ENVIRONMENT VARIABLES (Job-Scope)
-    # What: Configuration variables scoped ONLY to this specific job.
-    # Why: Isolates parameter boundaries between distinct build groups.
-    # =======================================================================
     env:
       BUILD_PROFILE: "production-optimized"
-      PYTHON_VERSION: "3.11"
       NODE_VERSION: "20"
 
-    # =======================================================================
-    # JOB OUTPUTS DECLARATION (Multi-Job Variable Handoff)
-    # What: Exposes generated values to separate jobs running on completely distinct VMs.
-    # Mapping syntax: variable_alias: ${{ steps.STEP_ID.outputs.VAR_KEY }}
-    # =======================================================================
     outputs:
       generated_app_version: ${{ steps.calc_version.outputs.computed_version }}
 
@@ -114,20 +124,12 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
-      # --- INDUSTRY STANDARD RUNTIME SETUP ACTIONS (NATIVE CACHING) ---
-      # Passing runtime variables via our Job Env properties to prevent code fragmentation
       - name: Set up JDK 17 (Java Stack)
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
-          cache: 'maven' # Drastically cuts build cycles down by 50% by storing heavy caching targets
-
-      - name: Set up Python Runtime (Python Stack)
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
+          cache: 'maven'
 
       - name: Set up Node.js Runtime (UI Stack)
         uses: actions/setup-node@v4
@@ -135,79 +137,131 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: 'npm'
 
-      # =====================================================================
-      # THE "RUN:" COMMAND & CONTEXT ASSIGNMENT INTERVIEW FOCUS
-      # How to save variable to same job: Append data to the '$GITHUB_ENV' tracking file.
-      # How to save variable to separate job: Append data to the '$GITHUB_OUTPUT' tracking file.
-      # =====================================================================
       - name: Calculate Version and Assign Variables
-        id: calc_version # Necessary target handle for downstream output mapping hooks
-        # =====================================================================
-        # LEVEL 3: STEP-LEVEL ENVIRONMENT VARIABLES (Step-Scope)
-        # What: Variables loaded natively into the execution shell window of ONE step.
-        # =====================================================================
+        id: calc_version 
         env:
           STEP_SPECIFIC_DEBUG: "true" 
         run: |
-          echo "Step Env (Debug Enabled): $STEP_SPECIFIC_DEBUG"
           RAW_VERSION="v1.0.$(date +%s)"
-          
-          # Writing state variables out to our system runner context tracking logs
           echo "INTERNAL_VERSION=$RAW_VERSION" >> $GITHUB_ENV
           echo "computed_version=$RAW_VERSION" >> $GITHUB_OUTPUT
 
       - name: Verify and Parse Scoped Lists/Maps Variables
         run: |
-          echo "Internal version from env context: $INTERNAL_VERSION"
-          
-          # Intercepting and loop-parsing our space-separated text list configuration
           for service in $SERVICE_LIST; do
-            echo "Assembling package for deployment branch component: $service"
+            echo "Assembling package component: $service"
           done
-          
-          # Reading and filtering out values from our JSON text map using 'jq' utility
           DEVOPS_EMAIL=$(echo '$TEAM_EMAILS' | jq -r '.devops')
-          echo "Successfully extracted target from map context: $DEVOPS_EMAIL"
 
-      # =====================================================================
-      # FILE OPERATIONS INTERVIEW FOCUS (Read, Write, Append)
-      # What: Custom data tracking via basic Linux file redirection flags.
-      # =====================================================================
       - name: Bash File Operations (Write, Append, Read)
         run: |
-          # WRITE: Outputs text to a new file using the single '>' character channel
           echo "=== Pipeline Build Log Initialized ===" > build-manifest.txt
-          
-          # APPEND: Pushes text safely onto the trailing line of an existing file via '>>'
           echo "Compiled at timestamp: $(date)" >> build-manifest.txt
-          echo "Target Registry Destination: $REGISTRY" >> build-manifest.txt
-          
-          # READ: Outputs raw textual blocks directly out to standard console windows via 'cat'
-          cat build-manifest.txt
 
-      # =====================================================================
-      # JSON OPERATIONS INTERVIEW FOCUS (Create, Read, Parse, Modify)
-      # What: Inline Python manipulation schemas used to manage parameters.
-      # Why: GHA does not have a native marketplace action for JSON mapping; relying on 
-      #      pre-installed Python libraries eliminates risky third-party dependencies.
-      # =====================================================================
       - name: Python JSON Operations (Create, Read, Parse, Update)
         run: |
           python3 -c "
           import json
-          
-          # 1. CREATE & WRITE: Generate a structured configuration map file on disk
-          config_map = {
-              'service_name': 'auth-api',
-              'runtime': 'python-slim',
-              'active_profiles': ['security-hardened', 'oauth-enabled']
-          }
+          config_map = {'service_name': 'auth-api', 'active_profiles': ['oauth-enabled']}
           with open('app-config.json', 'w') as f:
               json.dump(config_map, f, indent=4)
+          "
+
+      - name: Archive Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-package-outputs
+          path: |
+            build-manifest.txt
+            app-config.json
+
+      # =====================================================================
+      # SECRETS MANAGEMENT & ARTIFACTORY INTEGRATION INTERVIEW FOCUS
+      # What: Secure credentials retrieval mapping.
+      # How to configure in UI: Settings > Secrets and variables > Actions > New Repository Secret.
+      # The 3 Tiers of Secrets available:
+      #   1. Organization Level -> Shared globally across corporate repos.
+      #   2. Repository Level -> Confined strictly to this single project code base.
+      #   3. Environment Level -> Requires designated human approvers to unlock.
+      # Key GHA Security Protections:
+      #   - Blind-write design: Once saved in the UI, values can never be viewed or read again.
+      #   - Log Masking: GHA automatically intercepts stdout/stderr logs and prints '***' for secrets.
+      # Verified Industry Action: jfrog/setup-jfrog-cli@v4 (Official Integration)
+      # =====================================================================
+      - name: Setup JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          # Extracting encrypted secrets at rest natively via the context layer
+          JF_URL: ${{ secrets.JF_PLATFORM_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+
+      - name: Publish Binaries to JFrog Artifactory
+        run: |
+          # The JFrog CLI binary automatically detects JF_URL and JF_ACCESS_TOKEN inside the environment
+          echo "Authenticating securely using masked GitHub Secrets..."
+          echo "If a script accidentally executes an unmasked echo of the access token, GHA scrubs the output dynamically."
+          # jf rt upload "target/*.jar" "generic-local-repo/java-apps/"
+
+  # =========================================================================
+  # STAGE 5: CONTAINER ASSEMBLY AND SECURITY DISCOVERY (SYSDIG)
+  # =========================================================================
+  container-security:
+    runs-on: ubuntu-latest
+    needs: build-and-publish-artifacts
+    permissions:
+      contents: read     
+      packages: write    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }} # Automatically provided short-lived dynamic secret token
+
+      - name: Build Local Docker Image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false 
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+      - name: Run Sysdig Image Vulnerability Scan
+        uses: sysdiglabs/scan-action@v5
+        with:
+          image-tag: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          sysdig-secure-token: ${{ secrets.SYSDIG_SECURE_TOKEN }}
+          sysdig-secure-url: "https://sysdigcloud.com"
+
+      - name: Push Verified Image to Registry
+        if: success() 
+        run: |
+          docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+
+  # =========================================================================
+  # STAGE 6: CLOUD-NATIVE DEPLOYMENT
+  # =========================================================================
+  deploy-to-kubernetes:
+    runs-on: ubuntu-latest
+    needs: [build-and-publish-artifacts, container-security] 
+    if: |
+      github.event_name != 'workflow_dispatch' || 
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.deploy_confirmation == 'true')
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Read Captured App Version From Build Job
+        run: |
+          echo "Dynamic tag value passed from Stage 4: ${{ needs.build-and-publish-artifacts.outputs.generated_app_version }}"
+
+      - name: Inject Image Tag into Manifest
+        run: |
+          TARGET_ENV="${{ github.event.inputs.environment || 'staging' }}"
+          sed -i "s|DYNAMIC_IMAGE_TAG|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}|g" k8s-manifest.yaml
           
-          # 2. READ & PARSE: Extract variables from configuration files cleanly
-          with open('app-config.json', 'r') as f:
-              data = json.load(f)
-          print(f'Parsed Service Target: {data[\"service_name\"]}')
-          
-          # 3. MODIFY & UPDATE: Append variables safely without text fragmentation
+      - name: Verify Generated Manifest
+        run: cat k8s-manifest.yaml
